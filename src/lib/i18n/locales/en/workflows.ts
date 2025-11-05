@@ -99,6 +99,15 @@ export const Strings = {
   'signal-success': 'Workflow signaled.',
   'reset-modal-title': 'Reset Workflow',
   'reset-event-radio-group-description': 'Choose an Event to reset to',
+  'reset-by-event-id': 'Event ID',
+  'reset-by-reset-point': 'Reset Point',
+  'reset-point-select-label': 'Choose a reset point',
+  'reset-no-points-available': 'No reset points found in workflow history',
+  'cascade-to-children': 'Cascade reset to child workflows',
+  'cascade-reset-progress': 'Resetting {{count}} workflows...',
+  'cascade-reset-complete': 'Reset {{success}} of {{total}} workflows',
+  'cascade-reset-skipped':
+    'Skipped {{count}} workflows (reset point not found)',
   'reset-reapply-type-label':
     'Reapply Signals that happened after the Reset point',
   'reset-exclude-signals':

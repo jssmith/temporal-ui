@@ -4,12 +4,19 @@
   import Checkbox from '$lib/holocene/checkbox.svelte';
   import Input from '$lib/holocene/input/input.svelte';
   import Modal from '$lib/holocene/modal.svelte';
+  import RadioGroup from '$lib/holocene/radio-input/radio-group.svelte';
+  import RadioInput from '$lib/holocene/radio-input/radio-input.svelte';
   import Option from '$lib/holocene/select/option.svelte';
   import Select from '$lib/holocene/select/select.svelte';
   import { translate } from '$lib/i18n/translate';
-  import { resetWorkflow } from '$lib/services/workflow-service';
+  import {
+    cascadeResetWorkflow,
+    resetWorkflow,
+    resetWorkflowByPoint,
+  } from '$lib/services/workflow-service';
   import { isCloud } from '$lib/stores/advanced-visibility';
   import { resetEvents } from '$lib/stores/events';
+  import { resetPoints } from '$lib/stores/reset-points';
   import { resetWorkflows } from '$lib/stores/reset-workflows';
   import { temporalVersion } from '$lib/stores/versions';
   import type { WorkflowExecution } from '$lib/types/workflows';
@@ -41,6 +48,13 @@
 
   let excludeUpdates = false;
 
+  // Reset point options
+  type ResetMode = 'event-id' | 'reset-point';
+  let resetMode: Writable<ResetMode> = writable('event-id');
+  let selectedResetPoint: Writable<string> = writable('');
+  let cascade = false;
+  let cascadeProgress = '';
+
   const identity = getIdentity();
 
   const hideResetModal = () => {
@@ -49,13 +63,97 @@
     excludeSignals = false;
     excludeUpdates = false;
     $eventId = '';
+    $selectedResetPoint = '';
+    $resetMode = 'event-id';
+    cascade = false;
+    cascadeProgress = '';
     reason = '';
+    error = '';
   };
 
   const reset = async () => {
     error = '';
     loading = true;
+    cascadeProgress = '';
+
     try {
+      // Handle reset by point with cascade
+      if ($resetMode === 'reset-point' && cascade) {
+        const result = await cascadeResetWorkflow({
+          namespace,
+          workflow,
+          resetPointName: $selectedResetPoint,
+          reason,
+          includeSignals,
+          excludeSignals,
+          excludeUpdates,
+          identity,
+        });
+
+        cascadeProgress = translate('workflows.cascade-reset-complete', {
+          success: result.successCount,
+          total: result.totalCount,
+        });
+
+        if (result.skipped.length > 0) {
+          cascadeProgress +=
+            '\n' +
+            translate('workflows.cascade-reset-skipped', {
+              count: result.skipped.length,
+            });
+        }
+
+        // Get the parent workflow's new run ID (depth 0)
+        const parentResult = result.results.find((r) => r.depth === 0);
+        if (parentResult) {
+          resetWorkflows.update((previous) => ({
+            ...previous,
+            [workflow.runId]: parentResult.runId,
+          }));
+
+          if (onResetCompletion) {
+            onResetCompletion({ runId: parentResult.runId });
+          }
+        }
+
+        $refresh = Date.now();
+
+        // Show success message briefly before closing
+        setTimeout(() => {
+          hideResetModal();
+        }, 2000);
+        return;
+      }
+
+      // Handle reset by point (simple)
+      if ($resetMode === 'reset-point') {
+        const response = await resetWorkflowByPoint({
+          namespace,
+          workflow,
+          resetPointName: $selectedResetPoint,
+          reason,
+          includeSignals,
+          excludeSignals,
+          excludeUpdates,
+          identity,
+        });
+
+        if (onResetCompletion) {
+          onResetCompletion(response);
+        }
+
+        if (response && response.runId) {
+          resetWorkflows.update((previous) => ({
+            ...previous,
+            [workflow.runId]: response.runId,
+          }));
+        }
+        $refresh = Date.now();
+        hideResetModal();
+        return;
+      }
+
+      // Handle reset by event ID (existing behavior)
       const response = await resetWorkflow({
         namespace,
         workflow,
@@ -80,14 +178,19 @@
       $refresh = Date.now();
       hideResetModal();
     } catch (err) {
+      console.error('Reset workflow error:', err);
       error = isNetworkError(err)
         ? err.message
-        : translate('common.unknown-error');
+        : err?.message || translate('common.unknown-error');
     } finally {
       loading = false;
     }
-    hideResetModal();
   };
+
+  // Computed property for confirm button disabled state
+  $: confirmDisabled =
+    ($resetMode === 'event-id' && !$eventId) ||
+    ($resetMode === 'reset-point' && !$selectedResetPoint);
 </script>
 
 <Modal
@@ -100,22 +203,89 @@
   {loading}
   on:confirmModal={reset}
   on:cancelModal={hideResetModal}
-  confirmDisabled={!$eventId}
+  {confirmDisabled}
 >
   <h3 slot="title">{translate('workflows.reset-modal-title')}</h3>
   <svelte:fragment slot="content">
     <div class="flex w-full flex-col gap-4">
-      <Select
-        data-testid="workflow-reset-event-id-select"
-        menuClass="max-h-[16rem]"
-        label={translate('workflows.reset-event-radio-group-description')}
-        bind:value={$eventId}
-        id="reset-event-id"
+      <!-- Radio group to choose between Event ID and Reset Point -->
+      <RadioGroup
+        description={translate('workflows.reset-event-radio-group-description')}
+        bind:group={resetMode}
+        name="reset-mode"
       >
-        {#each $resetEvents as event}
-          <Option value={event.id}>{event.id} - {event.eventType}</Option>
-        {/each}
-      </Select>
+        <RadioInput
+          id="reset-mode-event-id"
+          value="event-id"
+          label={translate('workflows.reset-by-event-id')}
+        />
+        <RadioInput
+          id="reset-mode-reset-point"
+          value="reset-point"
+          label={translate('workflows.reset-by-reset-point')}
+          disabled={$resetPoints.length === 0}
+        />
+      </RadioGroup>
+
+      <!-- Show info message when no reset points are available -->
+      {#if $resetPoints.length === 0}
+        <div class="bg-gray-50 text-gray-700 rounded p-3 text-sm">
+          {translate('workflows.reset-no-points-available')}
+        </div>
+      {/if}
+
+      <!-- Event ID Select (shown when resetMode is 'event-id') -->
+      {#if $resetMode === 'event-id'}
+        <Select
+          data-testid="workflow-reset-event-id-select"
+          menuClass="max-h-[16rem]"
+          label={translate('workflows.reset-by-event-id')}
+          bind:value={$eventId}
+          id="reset-event-id"
+        >
+          {#each $resetEvents as event}
+            <Option value={event.id}>{event.id} - {event.eventType}</Option>
+          {/each}
+        </Select>
+      {/if}
+
+      <!-- Reset Point Select (shown when resetMode is 'reset-point') -->
+      {#if $resetMode === 'reset-point'}
+        <Select
+          data-testid="workflow-reset-point-select"
+          menuClass="max-h-[16rem]"
+          label={translate('workflows.reset-point-select-label')}
+          bind:value={$selectedResetPoint}
+          id="reset-point"
+        >
+          {#if $resetPoints.length === 0}
+            <Option value="" disabled>
+              {translate('workflows.reset-no-points-available')}
+            </Option>
+          {:else}
+            {#each $resetPoints as resetPoint}
+              <Option value={resetPoint.name}>
+                {resetPoint.name} (Event ID: {resetPoint.eventId})
+              </Option>
+            {/each}
+          {/if}
+        </Select>
+
+        <!-- Cascade checkbox (only shown for reset points) -->
+        <Checkbox
+          id="reset-cascade-checkbox"
+          data-testid="reset-cascade-checkbox"
+          bind:checked={cascade}
+          label={translate('workflows.cascade-to-children')}
+        />
+      {/if}
+
+      <!-- Show cascade progress if available -->
+      {#if cascadeProgress}
+        <div class="rounded bg-blue-50 p-3 text-sm text-blue-900">
+          {cascadeProgress}
+        </div>
+      {/if}
       {#if $isCloud || minimumVersionRequired('1.24.0', $temporalVersion)}
         <Checkbox
           id="reset-exclude-signals-checkbox"

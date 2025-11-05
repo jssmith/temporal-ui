@@ -145,6 +145,28 @@ export type ResetWorkflowOptions = {
   excludeUpdates: boolean;
 };
 
+export type ResetWorkflowByPointOptions = {
+  namespace: string;
+  workflow: WorkflowExecution;
+  resetPointName: string;
+  reason: string;
+  identity?: string;
+  includeSignals: boolean;
+  excludeSignals: boolean;
+  excludeUpdates: boolean;
+};
+
+export type CascadeResetWorkflowOptions = {
+  namespace: string;
+  workflow: WorkflowExecution;
+  resetPointName: string;
+  reason: string;
+  identity?: string;
+  includeSignals: boolean;
+  excludeSignals: boolean;
+  excludeUpdates: boolean;
+};
+
 export type FetchWorkflow =
   | typeof fetchAllWorkflows
   | typeof fetchAllArchivedWorkflows;
@@ -517,6 +539,119 @@ export async function resetWorkflow({
       'execution.runId': runId,
     },
   });
+}
+
+export async function resetWorkflowByPoint({
+  namespace,
+  workflow,
+  resetPointName,
+  reason,
+  includeSignals,
+  excludeSignals,
+  excludeUpdates,
+  identity,
+}: ResetWorkflowByPointOptions): Promise<{ runId: string }> {
+  // Import the utility to find reset points
+  const { findResetPointEventId } = await import(
+    '$lib/utilities/extract-reset-points'
+  );
+  const { fetchAllEvents } = await import('$lib/services/events-service');
+
+  // Fetch workflow history
+  const events = await fetchAllEvents({
+    namespace,
+    workflowId: workflow.id,
+    runId: workflow.runId,
+    sort: 'ascending',
+    setHistory: false, // Don't update the global store
+  });
+
+  // Find the event ID for the reset point
+  const eventId = findResetPointEventId(events, resetPointName);
+
+  if (!eventId) {
+    throw new Error(
+      `Reset point "${resetPointName}" not found in workflow history`,
+    );
+  }
+
+  // Use the existing resetWorkflow function with the found event ID
+  return resetWorkflow({
+    namespace,
+    workflow,
+    eventId,
+    reason,
+    includeSignals,
+    excludeSignals,
+    excludeUpdates,
+    identity,
+  });
+}
+
+export async function cascadeResetWorkflow({
+  namespace,
+  workflow,
+  resetPointName,
+  reason,
+  includeSignals,
+  excludeSignals,
+  excludeUpdates,
+  identity,
+}: CascadeResetWorkflowOptions): Promise<{
+  successCount: number;
+  totalCount: number;
+  skipped: string[];
+  results: { workflowId: string; runId: string; depth: number }[];
+}> {
+  // Import the cascade utility
+  const { buildCascadingPlan } = await import('$lib/utilities/cascade-reset');
+
+  // Build the cascading reset plan
+  const plan = await buildCascadingPlan(
+    namespace,
+    workflow.id,
+    workflow.runId,
+    resetPointName,
+  );
+
+  const results: { workflowId: string; runId: string; depth: number }[] = [];
+  let successCount = 0;
+
+  // Execute resets in order (deepest first)
+  for (const reset of plan.resets) {
+    try {
+      const response = await resetWorkflow({
+        namespace,
+        workflow: {
+          id: reset.workflowId,
+          runId: reset.runId,
+        } as WorkflowExecution,
+        eventId: reset.eventId,
+        reason: `${reason} (cascade)`,
+        includeSignals,
+        excludeSignals,
+        excludeUpdates,
+        identity,
+      });
+
+      results.push({
+        workflowId: reset.workflowId,
+        runId: response.runId,
+        depth: reset.depth,
+      });
+      successCount++;
+    } catch (err) {
+      console.error(`Failed to reset workflow ${reset.workflowId}:`, err);
+      plan.skipped.push(reset.workflowId);
+    }
+  }
+
+  return {
+    successCount,
+    totalCount: plan.resets.length,
+    skipped: plan.skipped,
+    results,
+  };
 }
 
 export async function fetchWorkflowForSchedule(
