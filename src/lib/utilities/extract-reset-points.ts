@@ -1,9 +1,6 @@
 import type { WorkflowEvents } from '$lib/types/events';
 import { decodePayload } from '$lib/utilities/decode-payload';
-import {
-  isMarkerRecordedEvent,
-  isWorkflowTaskCompletedEvent,
-} from '$lib/utilities/is-event-type';
+import { isMarkerRecordedEvent } from '$lib/utilities/is-event-type';
 
 export type ResetPoint = {
   name: string;
@@ -17,23 +14,10 @@ const SIDE_EFFECT_DATA_KEY = 'data';
 const LOCAL_ACTIVITY_MARKER_NAME = 'core_local_activity';
 const LOCAL_ACTIVITY_RESULT_KEY = 'result';
 
-/**
- * Finds the next WorkflowTaskCompleted event after the given marker event.
- * Returns null if no subsequent workflow task is found.
- */
-function findNextWorkflowTaskCompleted(
-  events: WorkflowEvents,
-  markerEventIndex: number,
-): string | null {
-  // Scan forward from the marker event to find the next WorkflowTaskCompleted
-  for (let i = markerEventIndex + 1; i < events.length; i++) {
-    const event = events[i];
-    if (isWorkflowTaskCompletedEvent(event)) {
-      return event.id;
-    }
-  }
-  return null;
-}
+// Removed: findNextWorkflowTaskCompleted
+// The correct behavior is to use the workflowTaskCompletedEventId from the marker's attributes,
+// which points to the WorkflowTaskCompleted event that CONTAINS the marker.
+// This matches the CLI behavior and ensures the marker gets re-executed.
 
 /**
  * Extracts reset points from workflow event history.
@@ -43,14 +27,14 @@ function findNextWorkflowTaskCompleted(
  * 3. LocalActivity markers containing reset point metadata
  *
  * Returns array of reset points with their names and corresponding event IDs.
- * The event ID returned is the next WorkflowTaskCompleted event AFTER the marker,
- * which ensures the workflow resumes after the reset point, not at it.
+ * The event ID returned is the workflowTaskCompletedEventId from the marker's attributes,
+ * which is the WorkflowTaskCompleted event that CONTAINS the marker.
+ * This matches the CLI behavior and ensures the workflow resets to the task that recorded the marker.
  */
 export function extractResetPoints(events: WorkflowEvents): ResetPoint[] {
   const resetPoints: ResetPoint[] = [];
 
-  for (let i = 0; i < events.length; i++) {
-    const event = events[i];
+  for (const event of events) {
     if (!isMarkerRecordedEvent(event)) {
       continue;
     }
@@ -73,18 +57,10 @@ export function extractResetPoints(events: WorkflowEvents): ResetPoint[] {
         try {
           const name = decodePayload(payloads[0], true) as string;
           if (name) {
-            // Find the next WorkflowTaskCompleted event after this marker
-            const nextTaskEventId = findNextWorkflowTaskCompleted(events, i);
-            if (nextTaskEventId) {
-              resetPoints.push({
-                name,
-                eventId: nextTaskEventId,
-              });
-            } else {
-              console.warn(
-                `Reset point "${name}" has no subsequent workflow task, skipping`,
-              );
-            }
+            resetPoints.push({
+              name,
+              eventId: workflowTaskCompletedEventId,
+            });
           }
         } catch (err) {
           console.warn('Failed to decode reset point marker name:', err);
@@ -104,18 +80,10 @@ export function extractResetPoints(events: WorkflowEvents): ResetPoint[] {
             Name?: string;
           };
           if (data?.Type === RESET_POINT_MARKER_NAME && data?.Name) {
-            // Find the next WorkflowTaskCompleted event after this marker
-            const nextTaskEventId = findNextWorkflowTaskCompleted(events, i);
-            if (nextTaskEventId) {
-              resetPoints.push({
-                name: data.Name,
-                eventId: nextTaskEventId,
-              });
-            } else {
-              console.warn(
-                `Reset point "${data.Name}" has no subsequent workflow task, skipping`,
-              );
-            }
+            resetPoints.push({
+              name: data.Name,
+              eventId: workflowTaskCompletedEventId,
+            });
           }
         } catch (err) {
           console.warn('Failed to decode SideEffect marker data:', err);
@@ -140,18 +108,10 @@ export function extractResetPoints(events: WorkflowEvents): ResetPoint[] {
           const name = result?.name || result?.Name;
 
           if (markerType === RESET_POINT_MARKER_NAME && name) {
-            // Find the next WorkflowTaskCompleted event after this marker
-            const nextTaskEventId = findNextWorkflowTaskCompleted(events, i);
-            if (nextTaskEventId) {
-              resetPoints.push({
-                name,
-                eventId: nextTaskEventId,
-              });
-            } else {
-              console.warn(
-                `Reset point "${name}" has no subsequent workflow task, skipping`,
-              );
-            }
+            resetPoints.push({
+              name,
+              eventId: workflowTaskCompletedEventId,
+            });
           }
         } catch (err) {
           console.warn('Failed to decode local activity marker result:', err);

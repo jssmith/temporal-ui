@@ -1,6 +1,7 @@
+/* eslint-disable import/order */
 import * as workflow from '@temporalio/workflow';
-
 import type * as activities from './activities';
+/* eslint-enable import/order */
 
 const { echo: Activity } = workflow.proxyActivities<typeof activities>({
   startToCloseTimeout: '10 seconds',
@@ -62,4 +63,81 @@ export async function CompletedWorkflow(
 
 export async function RunningWorkflow(): Promise<void> {
   return await workflow.sleep('10 days');
+}
+
+// Import reset point helper
+import { recordResetPoint } from './reset-point-helper';
+
+/**
+ * Test workflow with reset points for integration testing.
+ * This workflow executes multiple activities and records reset points between them.
+ */
+export async function WorkflowWithResetPoints(input: string): Promise<string> {
+  let result = `start-${input}`;
+
+  // Step 1: Execute first activity
+  result = await Activity(result);
+
+  // Record reset point after first activity
+  await recordResetPoint('after-first-activity');
+
+  // Step 2: Execute second activity
+  result = await Activity(result);
+
+  // Record reset point after second activity
+  await recordResetPoint('after-second-activity');
+
+  // Step 3: Execute third activity
+  result = await Activity(result);
+
+  return result;
+}
+
+/**
+ * Parent workflow that spawns a child workflow for cascading reset tests.
+ */
+export async function ParentWorkflowWithResetPoints(
+  input: string,
+): Promise<string> {
+  let result = `parent-start-${input}`;
+
+  // Step 1: Execute parent activity
+  result = await Activity(result);
+
+  // Record reset point after parent activity
+  await recordResetPoint('parent-checkpoint');
+
+  // Step 2: Start child workflow
+  const childHandle = await workflow.startChild(ChildWorkflowWithResetPoints, {
+    args: [input],
+    workflowId: `child-of-${workflow.workflowInfo().workflowId}`,
+  });
+
+  const childResult = await childHandle.result();
+  result = `${result}-${childResult}`;
+
+  // Step 3: Execute another parent activity
+  result = await Activity(result);
+
+  return result;
+}
+
+/**
+ * Child workflow with reset points for cascading reset tests.
+ */
+export async function ChildWorkflowWithResetPoints(
+  input: string,
+): Promise<string> {
+  let result = `child-start-${input}`;
+
+  // Step 1: Execute child activity
+  result = await Activity(result);
+
+  // Record reset point in child (same name as parent for cascading)
+  await recordResetPoint('parent-checkpoint');
+
+  // Step 2: Execute another child activity
+  result = await Activity(result);
+
+  return result;
 }
