@@ -125,7 +125,7 @@ describe('extractResetPoints', () => {
       expect(resetPoints).toHaveLength(1);
       expect(resetPoints[0]).toEqual({
         name: 'checkpoint1',
-        eventId: '10', // WorkflowTaskCompleted that contains the marker
+        eventId: '9', // WorkflowTaskStarted (id - 1 from WorkflowTaskCompleted 10)
       });
     });
 
@@ -143,11 +143,11 @@ describe('extractResetPoints', () => {
       expect(resetPoints).toHaveLength(2);
       expect(resetPoints[0]).toEqual({
         name: 'checkpoint1',
-        eventId: '10',
+        eventId: '9',
       });
       expect(resetPoints[1]).toEqual({
         name: 'checkpoint2',
-        eventId: '15',
+        eventId: '14',
       });
     });
 
@@ -163,7 +163,7 @@ describe('extractResetPoints', () => {
       expect(resetPoints).toHaveLength(1);
       expect(resetPoints[0]).toEqual({
         name: 'checkpoint1',
-        eventId: '10',
+        eventId: '9',
       });
     });
   });
@@ -181,7 +181,7 @@ describe('extractResetPoints', () => {
       expect(resetPoints).toHaveLength(1);
       expect(resetPoints[0]).toEqual({
         name: 'checkpoint1',
-        eventId: '10',
+        eventId: '9',
       });
     });
 
@@ -229,7 +229,7 @@ describe('extractResetPoints', () => {
       expect(resetPoints).toHaveLength(1);
       expect(resetPoints[0]).toEqual({
         name: 'checkpoint1',
-        eventId: '10',
+        eventId: '9',
       });
     });
 
@@ -268,7 +268,7 @@ describe('extractResetPoints', () => {
       expect(resetPoints).toHaveLength(1);
       expect(resetPoints[0]).toEqual({
         name: 'checkpoint1',
-        eventId: '10',
+        eventId: '9',
       });
     });
   });
@@ -388,7 +388,7 @@ describe('extractResetPoints', () => {
       expect(resetPoints).toHaveLength(1);
       expect(resetPoints[0]).toEqual({
         name: 'final-checkpoint',
-        eventId: '10',
+        eventId: '9',
       });
     });
   });
@@ -405,7 +405,7 @@ describe('findResetPointEventId', () => {
     ];
 
     const eventId = findResetPointEventId(events, 'checkpoint2');
-    expect(eventId).toBe('15');
+    expect(eventId).toBe('14');
   });
 
   it('should return null if reset point is not found', () => {
@@ -429,7 +429,7 @@ describe('findResetPointEventId', () => {
     ];
 
     const eventId = findResetPointEventId(events, 'checkpoint');
-    expect(eventId).toBe('10'); // First occurrence
+    expect(eventId).toBe('9'); // First occurrence
   });
 
   it('should return null for empty event list', () => {

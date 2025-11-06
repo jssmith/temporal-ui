@@ -14,10 +14,27 @@ const SIDE_EFFECT_DATA_KEY = 'data';
 const LOCAL_ACTIVITY_MARKER_NAME = 'core_local_activity';
 const LOCAL_ACTIVITY_RESULT_KEY = 'result';
 
-// Removed: findNextWorkflowTaskCompleted
-// The correct behavior is to use the workflowTaskCompletedEventId from the marker's attributes,
-// which points to the WorkflowTaskCompleted event that CONTAINS the marker.
-// This matches the CLI behavior and ensures the marker gets re-executed.
+/**
+ * Gets the WorkflowTaskStarted event ID for a given WorkflowTaskCompleted event ID.
+ * This is necessary because reset points should reset to WorkflowTaskStarted, not WorkflowTaskCompleted,
+ * to ensure proper replay of history without re-executing activities.
+ */
+function getWorkflowTaskStartedEventId(
+  events: WorkflowEvents,
+  completedEventId: string,
+): string | null {
+  for (const event of events) {
+    if (
+      event.id === completedEventId &&
+      event.eventType === 'WorkflowTaskCompleted'
+    ) {
+      const startedEventId =
+        event.workflowTaskCompletedEventAttributes?.startedEventId;
+      return startedEventId || null;
+    }
+  }
+  return null;
+}
 
 /**
  * Extracts reset points from workflow event history.
@@ -27,9 +44,8 @@ const LOCAL_ACTIVITY_RESULT_KEY = 'result';
  * 3. LocalActivity markers containing reset point metadata
  *
  * Returns array of reset points with their names and corresponding event IDs.
- * The event ID returned is the workflowTaskCompletedEventId from the marker's attributes,
- * which is the WorkflowTaskCompleted event that CONTAINS the marker.
- * This matches the CLI behavior and ensures the workflow resets to the task that recorded the marker.
+ * The event ID returned is the WorkflowTaskStarted event ID (not WorkflowTaskCompleted)
+ * to ensure proper replay behavior without re-executing activities.
  */
 export function extractResetPoints(events: WorkflowEvents): ResetPoint[] {
   const resetPoints: ResetPoint[] = [];
@@ -49,6 +65,19 @@ export function extractResetPoints(events: WorkflowEvents): ResetPoint[] {
       continue;
     }
 
+    // Get the WorkflowTaskStarted event ID for this reset point
+    const workflowTaskStartedEventId = getWorkflowTaskStartedEventId(
+      events,
+      workflowTaskCompletedEventId,
+    );
+
+    if (!workflowTaskStartedEventId) {
+      console.warn(
+        `Could not find WorkflowTaskStarted event for WorkflowTaskCompleted ${workflowTaskCompletedEventId}`,
+      );
+      continue;
+    }
+
     // Check for native reset point marker
     if (markerName === RESET_POINT_MARKER_NAME) {
       const nameField = details[RESET_POINT_NAME_KEY];
@@ -59,7 +88,7 @@ export function extractResetPoints(events: WorkflowEvents): ResetPoint[] {
           if (name) {
             resetPoints.push({
               name,
-              eventId: workflowTaskCompletedEventId,
+              eventId: workflowTaskStartedEventId,
             });
           }
         } catch (err) {
@@ -82,7 +111,7 @@ export function extractResetPoints(events: WorkflowEvents): ResetPoint[] {
           if (data?.Type === RESET_POINT_MARKER_NAME && data?.Name) {
             resetPoints.push({
               name: data.Name,
-              eventId: workflowTaskCompletedEventId,
+              eventId: workflowTaskStartedEventId,
             });
           }
         } catch (err) {
@@ -110,7 +139,7 @@ export function extractResetPoints(events: WorkflowEvents): ResetPoint[] {
           if (markerType === RESET_POINT_MARKER_NAME && name) {
             resetPoints.push({
               name,
-              eventId: workflowTaskCompletedEventId,
+              eventId: workflowTaskStartedEventId,
             });
           }
         } catch (err) {
