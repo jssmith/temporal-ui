@@ -2,6 +2,7 @@ import { fetchAllEvents } from '$lib/services/events-service';
 import type { WorkflowEvents } from '$lib/types/events';
 import { findResetPointEventId } from '$lib/utilities/extract-reset-points';
 import {
+  isChildWorkflowExecutionCompletedEvent,
   isChildWorkflowExecutionStartedEvent,
   isStartChildWorkflowExecutionInitiatedEvent,
 } from '$lib/utilities/is-event-type';
@@ -24,8 +25,14 @@ export type CascadeResetPlan = {
 };
 
 /**
- * Extracts child workflows that were started before the specified event ID.
- * Maps initiated events to started events to get run IDs.
+ * Extracts child workflows that were started but NOT completed before the specified event ID.
+ *
+ * Children that completed before the reset point don't need to be reset because:
+ * - Their results are already in the parent's history
+ * - The parent will replay those results
+ * - Server reconnection will handle reconnecting the parent to the existing child
+ *
+ * Only children that are still in-progress at the reset point need cascade consideration.
  */
 export function extractChildrenBeforeEvent(
   events: WorkflowEvents,
@@ -33,6 +40,7 @@ export function extractChildrenBeforeEvent(
 ): ChildRef[] {
   const beforeEventIdNum = parseInt(beforeEventId, 10);
   const childMap = new Map<string, ChildRef>();
+  const completedChildRunIds = new Set<string>();
 
   for (const event of events) {
     const eventId = parseInt(event.id, 10);
@@ -61,11 +69,22 @@ export function extractChildrenBeforeEvent(
           child.runId = runId;
         }
       }
+    } else if (isChildWorkflowExecutionCompletedEvent(event)) {
+      // Track completed children - these don't need to be reset
+      const attr = event.childWorkflowExecutionCompletedEventAttributes;
+      const runId = attr?.workflowExecution?.runId;
+      if (runId) {
+        completedChildRunIds.add(runId);
+      }
     }
   }
 
-  // Return only children that have both workflowId and runId
-  return Array.from(childMap.values()).filter((child) => child.runId !== '');
+  // Return only children that:
+  // 1. Have both workflowId and runId (were actually started)
+  // 2. Did NOT complete before the reset point (need cascade reset)
+  return Array.from(childMap.values()).filter(
+    (child) => child.runId !== '' && !completedChildRunIds.has(child.runId),
+  );
 }
 
 /**
