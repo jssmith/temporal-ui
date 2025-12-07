@@ -2,6 +2,7 @@
   import { writable, type Writable } from 'svelte/store';
 
   import Checkbox from '$lib/holocene/checkbox.svelte';
+  import Spinner from '$lib/holocene/icon/svg/spinner.svelte';
   import Input from '$lib/holocene/input/input.svelte';
   import Modal from '$lib/holocene/modal.svelte';
   import RadioGroup from '$lib/holocene/radio-input/radio-group.svelte';
@@ -20,6 +21,10 @@
   import { resetWorkflows } from '$lib/stores/reset-workflows';
   import { temporalVersion } from '$lib/stores/versions';
   import type { WorkflowExecution } from '$lib/types/workflows';
+  import {
+    discoverAllResetPoints,
+    type DiscoveredResetPoint,
+  } from '$lib/utilities/cascade-reset';
   import { getIdentity } from '$lib/utilities/core-context';
   import { isNetworkError } from '$lib/utilities/is-network-error';
   import { minimumVersionRequired } from '$lib/utilities/version-check';
@@ -55,7 +60,49 @@
   let cascade = false;
   let cascadeProgress = '';
 
+  // Discovered reset points (includes child markers when cascade is enabled)
+  let discoveredResetPoints: DiscoveredResetPoint[] = [];
+  let discoveringResetPoints = false;
+
   const identity = getIdentity();
+
+  // Handle cascade checkbox change - discover child markers when enabled
+  async function onCascadeChange(checked: boolean) {
+    cascade = checked;
+    $selectedResetPoint = '';
+
+    if (checked) {
+      discoveringResetPoints = true;
+      try {
+        discoveredResetPoints = await discoverAllResetPoints(
+          namespace,
+          workflow.id,
+          workflow.runId,
+        );
+      } catch (err) {
+        console.error('Failed to discover reset points:', err);
+        discoveredResetPoints = [];
+      } finally {
+        discoveringResetPoints = false;
+      }
+    } else {
+      discoveredResetPoints = [];
+    }
+  }
+
+  // Get combined reset points for dropdown
+  $: availableResetPoints = cascade
+    ? discoveredResetPoints
+    : $resetPoints.map((rp) => ({
+        name: rp.name,
+        displayName: rp.name,
+        source: 'parent' as const,
+      }));
+
+  // Check if any reset points are available (including discovered child points)
+  $: _hasAnyResetPoints = cascade
+    ? discoveredResetPoints.length > 0
+    : $resetPoints.length > 0;
 
   const hideResetModal = () => {
     open = false;
@@ -67,6 +114,8 @@
     $resetMode = 'event-id';
     cascade = false;
     cascadeProgress = '';
+    discoveredResetPoints = [];
+    discoveringResetPoints = false;
     reason = '';
     error = '';
   };
@@ -190,7 +239,8 @@
   // Computed property for confirm button disabled state
   $: confirmDisabled =
     ($resetMode === 'event-id' && !$eventId) ||
-    ($resetMode === 'reset-point' && !$selectedResetPoint);
+    ($resetMode === 'reset-point' && !$selectedResetPoint) ||
+    discoveringResetPoints;
 </script>
 
 <Modal
@@ -223,16 +273,8 @@
           id="reset-mode-reset-point"
           value="reset-point"
           label={translate('workflows.reset-by-reset-point')}
-          disabled={$resetPoints.length === 0}
         />
       </RadioGroup>
-
-      <!-- Show info message when no reset points are available -->
-      {#if $resetPoints.length === 0}
-        <div class="bg-gray-50 text-gray-700 rounded p-3 text-sm">
-          {translate('workflows.reset-no-points-available')}
-        </div>
-      {/if}
 
       <!-- Event ID Select (shown when resetMode is 'event-id') -->
       {#if $resetMode === 'event-id'}
@@ -251,33 +293,45 @@
 
       <!-- Reset Point Select (shown when resetMode is 'reset-point') -->
       {#if $resetMode === 'reset-point'}
-        <Select
-          data-testid="workflow-reset-point-select"
-          menuClass="max-h-[16rem]"
-          label={translate('workflows.reset-point-select-label')}
-          bind:value={$selectedResetPoint}
-          id="reset-point"
-        >
-          {#if $resetPoints.length === 0}
-            <Option value="" disabled>
-              {translate('workflows.reset-no-points-available')}
-            </Option>
-          {:else}
-            {#each $resetPoints as resetPoint}
-              <Option value={resetPoint.name}>
-                {resetPoint.name} (Event ID: {resetPoint.eventId})
-              </Option>
-            {/each}
-          {/if}
-        </Select>
-
-        <!-- Cascade checkbox (only shown for reset points) -->
+        <!-- Cascade checkbox (shown first to discover child markers) -->
         <Checkbox
           id="reset-cascade-checkbox"
           data-testid="reset-cascade-checkbox"
-          bind:checked={cascade}
+          checked={cascade}
+          on:change={(e) => onCascadeChange(e.detail.checked)}
           label={translate('workflows.cascade-to-children')}
         />
+
+        <!-- Loading indicator when discovering child markers -->
+        {#if discoveringResetPoints}
+          <div class="text-gray-600 flex items-center gap-2 text-sm">
+            <Spinner />
+            <span>{translate('workflows.discovering-reset-points')}</span>
+          </div>
+        {:else}
+          <Select
+            data-testid="workflow-reset-point-select"
+            menuClass="max-h-[16rem]"
+            label={translate('workflows.reset-point-select-label')}
+            bind:value={$selectedResetPoint}
+            id="reset-point"
+          >
+            {#if availableResetPoints.length === 0}
+              <Option value="" disabled>
+                {translate('workflows.reset-no-points-available')}
+              </Option>
+            {:else}
+              {#each availableResetPoints as resetPoint}
+                <Option value={resetPoint.name}>
+                  {resetPoint.displayName}
+                  {#if resetPoint.source === 'child'}
+                    <span class="text-gray-500">(child)</span>
+                  {/if}
+                </Option>
+              {/each}
+            {/if}
+          </Select>
+        {/if}
       {/if}
 
       <!-- Show cascade progress if available -->

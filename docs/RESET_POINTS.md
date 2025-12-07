@@ -53,11 +53,40 @@ Cascade reset extends reset-by-point to automatically reset child workflows that
 ### How It Works
 
 1. User selects a reset point and enables "Cascade to children"
-2. UI builds a reset plan by discovering child workflows
-3. Only children started **before** the reset point are considered
-4. Only children that **have** the same reset point name are included
-5. Children that **completed** before the reset point are skipped (server reconnection handles them)
-6. Resets execute **bottom-up** (deepest children first, then parents)
+2. UI discovers reset points from parent **and all children** (shown in dropdown)
+3. Child markers are prefixed with their path (e.g., `child-1/after-fetch`)
+4. When a child marker is selected, parent reset point is calculated automatically
+5. Resets execute **bottom-up** (deepest children first, then parents)
+
+### Child Reset Point Discovery
+
+When the cascade checkbox is enabled:
+
+1. UI fetches the parent workflow's history and extracts its reset points
+2. UI recursively fetches child workflow histories
+3. Child reset points are added to the dropdown with path prefix
+4. User can select either parent or child markers
+
+Example dropdown after enabling cascade:
+
+- `after-payment` (parent marker)
+- `child-1/after-fetch` (marker in child-1)
+- `child-1/grandchild-1/after-process` (marker in grandchild)
+
+### Propagate Up
+
+When a reset point exists **only in a child workflow** (not in the parent):
+
+1. User selects the child marker (e.g., `child-1/after-fetch`)
+2. UI calculates parent's reset point as "WorkflowTaskCompleted after child was started"
+3. Both parent and child are added to the reset plan
+4. Bottom-up execution ensures child resets first, then parent
+
+This allows resetting to any marker in the workflow tree, not just markers in the parent.
+
+### Conservative Reset (Race Condition Prevention)
+
+To avoid race conditions where a child might complete between planning and execution, the parent is **always reset** when propagating up from a child marker - even if the child appears to be in progress. This ensures the parent will be in a consistent state to reconnect with the reset child.
 
 ### Why Bottom-Up Order?
 
@@ -83,6 +112,10 @@ This is why children that **completed** before the reset point don't need explic
 
 - `src/lib/utilities/extract-reset-points.ts` - Extract reset points from workflow history
 - `src/lib/utilities/cascade-reset.ts` - Build cascading reset plans
+  - `discoverAllResetPoints()` - Discover all markers from parent + children
+  - `findParentResetPointForChild()` - Calculate parent reset point for propagate-up
+  - `extractAllChildren()` - Get all children (for marker discovery)
+  - `buildCascadingPlan()` - Build the full reset plan with propagate-up support
 
 ### Stores
 
@@ -110,11 +143,32 @@ pnpm test -- extract-reset-points.test.ts --run
 pnpm test -- cascade-reset.test.ts --run
 ```
 
+**Covered scenarios:**
+
+- Marker detection for all three marker types (native, SideEffect, LocalActivity)
+- Finding next WorkflowTaskCompleted event
+- Child extraction with various event patterns
+- Propagate-up reset point calculation
+- Edge cases (no children, completed children, missing markers)
+
 ### Integration Tests
 
 ```bash
 pnpm test:integration -- workflow-reset-points.spec.ts
 ```
+
+**Covered scenarios:**
+
+- Reset point detection from UI (via modal)
+- Cascading reset with child workflows
+- Activity replay verification (activities before marker not re-executed)
+- **Propagate-up tests:**
+  - Child marker discovery when cascade checkbox enabled
+  - Loading indicator during discovery
+  - Propagate-up reset execution (both parent and child reset)
+  - Parent + child marker visibility in dropdown
+  - Multi-level hierarchy documentation
+  - Error handling for deleted/missing children
 
 ## Best Practices
 

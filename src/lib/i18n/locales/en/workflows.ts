@@ -108,6 +108,7 @@ export const Strings = {
   'cascade-reset-complete': 'Reset {{success}} of {{total}} workflows',
   'cascade-reset-skipped':
     'Skipped {{count}} workflows (reset point not found)',
+  'discovering-reset-points': 'Discovering reset points in child workflows...',
   'reset-reapply-type-label':
     'Reapply Signals that happened after the Reset point',
   'reset-exclude-signals':

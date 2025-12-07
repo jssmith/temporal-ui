@@ -141,3 +141,71 @@ export async function ChildWorkflowWithResetPoints(
 
   return result;
 }
+
+/**
+ * Parent workflow WITHOUT markers - for testing propagate-up feature.
+ * The markers exist only in the child workflow.
+ */
+export async function ParentWithoutMarkers(input: string): Promise<string> {
+  let result = `parent-no-markers-${input}`;
+
+  // Step 1: Execute parent activity (no marker after this)
+  result = await Activity(result);
+
+  // Step 2: Start child workflow that HAS markers
+  const childHandle = await workflow.startChild(ChildWithMarkersOnly, {
+    args: [input],
+    workflowId: `child-markers-${workflow.workflowInfo().workflowId}`,
+  });
+
+  const childResult = await childHandle.result();
+  result = `${result}-${childResult}`;
+
+  // Step 3: Execute another parent activity (still no marker)
+  result = await Activity(result);
+
+  return result;
+}
+
+/**
+ * Child workflow that has markers (for propagate-up testing).
+ * Parent workflow has NO markers, so cascade must propagate up.
+ */
+export async function ChildWithMarkersOnly(input: string): Promise<string> {
+  let result = `child-with-markers-${input}`;
+
+  // Step 1: Execute child activity
+  result = await Activity(result);
+
+  // Record reset point - this is the only marker in the tree!
+  await recordResetPoint('child-only-checkpoint');
+
+  // Step 2: Execute another child activity
+  result = await Activity(result);
+
+  return result;
+}
+
+/**
+ * Grandparent workflow for testing multi-level propagate-up.
+ * Grandparent → Parent (no markers) → Child (has markers)
+ */
+export async function GrandparentWithoutMarkers(
+  input: string,
+): Promise<string> {
+  let result = `grandparent-${input}`;
+
+  // Execute grandparent activity
+  result = await Activity(result);
+
+  // Start parent without markers (which will start child with markers)
+  const parentHandle = await workflow.startChild(ParentWithoutMarkers, {
+    args: [input],
+    workflowId: `parent-of-${workflow.workflowInfo().workflowId}`,
+  });
+
+  const parentResult = await parentHandle.result();
+  result = `${result}-${parentResult}`;
+
+  return result;
+}

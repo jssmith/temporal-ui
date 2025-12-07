@@ -1,10 +1,14 @@
 import { fetchAllEvents } from '$lib/services/events-service';
 import type { WorkflowEvents } from '$lib/types/events';
-import { findResetPointEventId } from '$lib/utilities/extract-reset-points';
+import {
+  extractResetPoints,
+  findResetPointEventId,
+} from '$lib/utilities/extract-reset-points';
 import {
   isChildWorkflowExecutionCompletedEvent,
   isChildWorkflowExecutionStartedEvent,
   isStartChildWorkflowExecutionInitiatedEvent,
+  isWorkflowTaskCompletedEvent,
 } from '$lib/utilities/is-event-type';
 
 export type ChildRef = {
@@ -23,6 +27,139 @@ export type CascadeResetPlan = {
   resets: ResetInfo[];
   skipped: string[];
 };
+
+export type DiscoveredResetPoint = {
+  name: string;
+  displayName: string;
+  source: 'parent' | 'child';
+  childWorkflowId?: string;
+  childPath?: string;
+};
+
+/**
+ * Extracts ALL child workflows from history (no event cutoff).
+ * Used for discovering child reset points when cascade is enabled.
+ */
+export function extractAllChildren(events: WorkflowEvents): ChildRef[] {
+  const childMap = new Map<string, ChildRef>();
+
+  for (const event of events) {
+    if (isStartChildWorkflowExecutionInitiatedEvent(event)) {
+      const attr = event.startChildWorkflowExecutionInitiatedEventAttributes;
+      const workflowId = attr?.workflowId;
+      if (workflowId) {
+        childMap.set(event.id, {
+          workflowId,
+          runId: '',
+        });
+      }
+    } else if (isChildWorkflowExecutionStartedEvent(event)) {
+      const attr = event.childWorkflowExecutionStartedEventAttributes;
+      const initiatedEventId = attr?.initiatedEventId;
+      const runId = attr?.workflowExecution?.runId;
+
+      if (initiatedEventId && runId) {
+        const child = childMap.get(String(initiatedEventId));
+        if (child) {
+          child.runId = runId;
+        }
+      }
+    }
+  }
+
+  return Array.from(childMap.values()).filter((child) => child.runId !== '');
+}
+
+/**
+ * Finds the WorkflowTaskCompleted event ID after a child workflow was started.
+ * Used for propagate-up reset when the reset point is only in the child.
+ */
+export function findParentResetPointForChild(
+  parentEvents: WorkflowEvents,
+  childWorkflowId: string,
+): string | null {
+  let foundChildStart = false;
+
+  for (const event of parentEvents) {
+    if (isStartChildWorkflowExecutionInitiatedEvent(event)) {
+      const attr = event.startChildWorkflowExecutionInitiatedEventAttributes;
+      if (attr?.workflowId === childWorkflowId) {
+        foundChildStart = true;
+      }
+    }
+
+    if (foundChildStart && isWorkflowTaskCompletedEvent(event)) {
+      return event.id;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Recursively discovers all reset points from a workflow and its children.
+ * Returns reset points from parent and all children, with child markers prefixed.
+ */
+async function discoverResetPointsRecursive(
+  namespace: string,
+  workflowId: string,
+  runId: string,
+  pathPrefix: string,
+  results: DiscoveredResetPoint[],
+): Promise<void> {
+  try {
+    const events = await fetchAllEvents({
+      namespace,
+      workflowId,
+      runId,
+      sort: 'ascending',
+      setHistory: false,
+    });
+
+    const resetPoints = extractResetPoints(events);
+    const isParent = pathPrefix === '';
+
+    for (const rp of resetPoints) {
+      results.push({
+        name: rp.name,
+        displayName: isParent ? rp.name : `${pathPrefix}/${rp.name}`,
+        source: isParent ? 'parent' : 'child',
+        childWorkflowId: isParent ? undefined : workflowId,
+        childPath: isParent ? undefined : pathPrefix,
+      });
+    }
+
+    const children = extractAllChildren(events);
+    for (const child of children) {
+      const childPath = isParent
+        ? child.workflowId
+        : `${pathPrefix}/${child.workflowId}`;
+      await discoverResetPointsRecursive(
+        namespace,
+        child.workflowId,
+        child.runId,
+        childPath,
+        results,
+      );
+    }
+  } catch (err) {
+    console.error(`Failed to discover reset points for ${workflowId}:`, err);
+  }
+}
+
+/**
+ * Discovers all reset points from a workflow and its children.
+ * Parent markers are shown with just the name, child markers are prefixed with path.
+ */
+export async function discoverAllResetPoints(
+  namespace: string,
+  workflowId: string,
+  runId: string,
+): Promise<DiscoveredResetPoint[]> {
+  const results: DiscoveredResetPoint[] = [];
+  await discoverResetPointsRecursive(namespace, workflowId, runId, '', results);
+  return results;
+}
 
 /**
  * Extracts child workflows that were started but NOT completed before the specified event ID.
@@ -90,6 +227,9 @@ export function extractChildrenBeforeEvent(
 /**
  * Recursively builds a cascading reset plan.
  * Discovers all child workflows and finds the same reset point in each.
+ *
+ * Supports "propagate up": if the parent doesn't have the reset point but a child does,
+ * the parent's reset point is calculated as "after child was started".
  */
 async function discoverCascade(
   namespace: string,
@@ -98,49 +238,88 @@ async function discoverCascade(
   resetPointName: string,
   depth: number,
   plan: CascadeResetPlan,
-): Promise<void> {
+  _parentEvents?: WorkflowEvents,
+): Promise<boolean> {
   try {
-    // Fetch workflow history
     const events = await fetchAllEvents({
       namespace,
       workflowId,
       runId,
       sort: 'ascending',
-      setHistory: false, // Don't update the global store
+      setHistory: false,
     });
 
-    // Find reset point marker
     const eventId = findResetPointEventId(events, resetPointName);
 
-    if (!eventId) {
-      plan.skipped.push(workflowId);
-      return;
+    if (eventId) {
+      plan.resets.push({
+        workflowId,
+        runId,
+        eventId,
+        depth,
+      });
+
+      const children = extractChildrenBeforeEvent(events, eventId);
+      for (const child of children) {
+        await discoverCascade(
+          namespace,
+          child.workflowId,
+          child.runId,
+          resetPointName,
+          depth + 1,
+          plan,
+          events,
+        );
+      }
+      return true;
     }
 
-    // Add to reset plan
-    plan.resets.push({
-      workflowId,
-      runId,
-      eventId,
-      depth,
-    });
+    // Propagate up: parent doesn't have the marker, check children
+    const allChildren = extractAllChildren(events);
+    let foundInChild = false;
+    let childWithMarker: ChildRef | null = null;
 
-    // Find and recurse into children
-    const children = extractChildrenBeforeEvent(events, eventId);
-
-    for (const child of children) {
-      await discoverCascade(
+    for (const child of allChildren) {
+      const childHasMarker = await discoverCascade(
         namespace,
         child.workflowId,
         child.runId,
         resetPointName,
         depth + 1,
         plan,
+        events,
       );
+
+      if (childHasMarker && !foundInChild) {
+        foundInChild = true;
+        childWithMarker = child;
+      }
     }
+
+    if (foundInChild && childWithMarker) {
+      // Calculate parent's reset point as "after child was started"
+      const parentResetEventId = findParentResetPointForChild(
+        events,
+        childWithMarker.workflowId,
+      );
+
+      if (parentResetEventId) {
+        plan.resets.push({
+          workflowId,
+          runId,
+          eventId: parentResetEventId,
+          depth,
+        });
+        return true;
+      }
+    }
+
+    plan.skipped.push(workflowId);
+    return false;
   } catch (err) {
     console.error(`Failed to discover cascade for ${workflowId}:`, err);
     plan.skipped.push(workflowId);
+    return false;
   }
 }
 
