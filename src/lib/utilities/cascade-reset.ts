@@ -32,8 +32,8 @@ export type DiscoveredResetPoint = {
   name: string;
   displayName: string;
   source: 'parent' | 'child';
-  childWorkflowId?: string;
-  childPath?: string;
+  childWorkflowIds?: string[];
+  childPaths?: string[];
 };
 
 /**
@@ -124,8 +124,8 @@ async function discoverResetPointsRecursive(
         name: rp.name,
         displayName: isParent ? rp.name : `${pathPrefix}/${rp.name}`,
         source: isParent ? 'parent' : 'child',
-        childWorkflowId: isParent ? undefined : workflowId,
-        childPath: isParent ? undefined : pathPrefix,
+        childWorkflowIds: isParent ? undefined : [workflowId],
+        childPaths: isParent ? undefined : [pathPrefix],
       });
     }
 
@@ -148,8 +148,60 @@ async function discoverResetPointsRecursive(
 }
 
 /**
+ * Groups discovered reset points by marker name.
+ * Parent markers remain separate, child markers with the same name are grouped together.
+ * Display format for grouped child markers: "marker_name ([workflow1, workflow2])"
+ */
+export function groupResetPointsByName(
+  points: DiscoveredResetPoint[],
+): DiscoveredResetPoint[] {
+  const parentPoints: DiscoveredResetPoint[] = [];
+  const childPointsByName = new Map<string, DiscoveredResetPoint>();
+
+  for (const point of points) {
+    if (point.source === 'parent') {
+      // Parent markers stay separate
+      parentPoints.push(point);
+    } else {
+      // Group child markers by name
+      const existing = childPointsByName.get(point.name);
+      if (existing) {
+        // Merge into existing group
+        existing.childWorkflowIds = [
+          ...(existing.childWorkflowIds || []),
+          ...(point.childWorkflowIds || []),
+        ];
+        existing.childPaths = [
+          ...(existing.childPaths || []),
+          ...(point.childPaths || []),
+        ];
+      } else {
+        // Create new group
+        childPointsByName.set(point.name, { ...point });
+      }
+    }
+  }
+
+  // Update displayName for grouped child markers
+  for (const point of childPointsByName.values()) {
+    const workflowIds = point.childWorkflowIds || [];
+    if (workflowIds.length > 1) {
+      // Format: "marker_name ([workflow1, workflow2])"
+      point.displayName = `${point.name} ([${workflowIds.join(', ')}])`;
+    } else if (workflowIds.length === 1) {
+      // Single child: keep path-based format for clarity
+      const path = point.childPaths?.[0] || workflowIds[0];
+      point.displayName = `${path}/${point.name}`;
+    }
+  }
+
+  // Return parent markers first, then grouped child markers
+  return [...parentPoints, ...Array.from(childPointsByName.values())];
+}
+
+/**
  * Discovers all reset points from a workflow and its children.
- * Parent markers are shown with just the name, child markers are prefixed with path.
+ * Parent markers are shown with just the name, child markers with the same name are grouped.
  */
 export async function discoverAllResetPoints(
   namespace: string,
@@ -158,7 +210,7 @@ export async function discoverAllResetPoints(
 ): Promise<DiscoveredResetPoint[]> {
   const results: DiscoveredResetPoint[] = [];
   await discoverResetPointsRecursive(namespace, workflowId, runId, '', results);
-  return results;
+  return groupResetPointsByName(results);
 }
 
 /**

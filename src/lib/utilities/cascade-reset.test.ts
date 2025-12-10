@@ -5,9 +5,11 @@ import type { WorkflowEvents } from '$lib/types/events';
 import {
   buildCascadingPlan,
   type CascadeResetPlan,
+  type DiscoveredResetPoint,
   extractAllChildren,
   extractChildrenBeforeEvent,
   findParentResetPointForChild,
+  groupResetPointsByName,
   type ResetInfo,
 } from './cascade-reset';
 
@@ -1103,5 +1105,205 @@ describe('Propagate-up reset behavior', () => {
       expect(plan.resets.map((r) => r.workflowId)).toContain('parent');
       expect(plan.skipped).toContain('child-2');
     });
+  });
+});
+
+describe('groupResetPointsByName', () => {
+  it('should keep parent markers separate and ungrouped', () => {
+    const points: DiscoveredResetPoint[] = [
+      { name: 'checkpoint-1', displayName: 'checkpoint-1', source: 'parent' },
+      { name: 'checkpoint-2', displayName: 'checkpoint-2', source: 'parent' },
+    ];
+
+    const grouped = groupResetPointsByName(points);
+
+    expect(grouped).toHaveLength(2);
+    expect(grouped[0]).toEqual({
+      name: 'checkpoint-1',
+      displayName: 'checkpoint-1',
+      source: 'parent',
+    });
+    expect(grouped[1]).toEqual({
+      name: 'checkpoint-2',
+      displayName: 'checkpoint-2',
+      source: 'parent',
+    });
+  });
+
+  it('should group child markers with the same name', () => {
+    const points: DiscoveredResetPoint[] = [
+      {
+        name: 'after-fetch',
+        displayName: 'child-1/after-fetch',
+        source: 'child',
+        childWorkflowIds: ['child-1'],
+        childPaths: ['child-1'],
+      },
+      {
+        name: 'after-fetch',
+        displayName: 'child-2/after-fetch',
+        source: 'child',
+        childWorkflowIds: ['child-2'],
+        childPaths: ['child-2'],
+      },
+    ];
+
+    const grouped = groupResetPointsByName(points);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].name).toBe('after-fetch');
+    expect(grouped[0].source).toBe('child');
+    expect(grouped[0].childWorkflowIds).toEqual(['child-1', 'child-2']);
+    expect(grouped[0].childPaths).toEqual(['child-1', 'child-2']);
+    expect(grouped[0].displayName).toBe('after-fetch ([child-1, child-2])');
+  });
+
+  it('should handle mixed parent and child markers', () => {
+    const points: DiscoveredResetPoint[] = [
+      { name: 'checkpoint', displayName: 'checkpoint', source: 'parent' },
+      {
+        name: 'after-fetch',
+        displayName: 'child-1/after-fetch',
+        source: 'child',
+        childWorkflowIds: ['child-1'],
+        childPaths: ['child-1'],
+      },
+      {
+        name: 'after-fetch',
+        displayName: 'child-2/after-fetch',
+        source: 'child',
+        childWorkflowIds: ['child-2'],
+        childPaths: ['child-2'],
+      },
+    ];
+
+    const grouped = groupResetPointsByName(points);
+
+    expect(grouped).toHaveLength(2);
+
+    // Parent marker first
+    expect(grouped[0].name).toBe('checkpoint');
+    expect(grouped[0].source).toBe('parent');
+
+    // Grouped child marker second
+    expect(grouped[1].name).toBe('after-fetch');
+    expect(grouped[1].source).toBe('child');
+    expect(grouped[1].childWorkflowIds).toEqual(['child-1', 'child-2']);
+    expect(grouped[1].displayName).toBe('after-fetch ([child-1, child-2])');
+  });
+
+  it('should keep single child markers with path-based displayName', () => {
+    const points: DiscoveredResetPoint[] = [
+      {
+        name: 'unique-marker',
+        displayName: 'child-1/unique-marker',
+        source: 'child',
+        childWorkflowIds: ['child-1'],
+        childPaths: ['child-1'],
+      },
+    ];
+
+    const grouped = groupResetPointsByName(points);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].name).toBe('unique-marker');
+    expect(grouped[0].displayName).toBe('child-1/unique-marker');
+    expect(grouped[0].childWorkflowIds).toEqual(['child-1']);
+  });
+
+  it('should group markers from deeply nested children', () => {
+    const points: DiscoveredResetPoint[] = [
+      {
+        name: 'deep-checkpoint',
+        displayName: 'child-1/grandchild-1/deep-checkpoint',
+        source: 'child',
+        childWorkflowIds: ['grandchild-1'],
+        childPaths: ['child-1/grandchild-1'],
+      },
+      {
+        name: 'deep-checkpoint',
+        displayName: 'child-2/grandchild-2/deep-checkpoint',
+        source: 'child',
+        childWorkflowIds: ['grandchild-2'],
+        childPaths: ['child-2/grandchild-2'],
+      },
+    ];
+
+    const grouped = groupResetPointsByName(points);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].name).toBe('deep-checkpoint');
+    expect(grouped[0].childWorkflowIds).toEqual([
+      'grandchild-1',
+      'grandchild-2',
+    ]);
+    expect(grouped[0].displayName).toBe(
+      'deep-checkpoint ([grandchild-1, grandchild-2])',
+    );
+  });
+
+  it('should handle multiple different child markers', () => {
+    const points: DiscoveredResetPoint[] = [
+      {
+        name: 'marker-a',
+        displayName: 'child-1/marker-a',
+        source: 'child',
+        childWorkflowIds: ['child-1'],
+        childPaths: ['child-1'],
+      },
+      {
+        name: 'marker-b',
+        displayName: 'child-1/marker-b',
+        source: 'child',
+        childWorkflowIds: ['child-1'],
+        childPaths: ['child-1'],
+      },
+      {
+        name: 'marker-a',
+        displayName: 'child-2/marker-a',
+        source: 'child',
+        childWorkflowIds: ['child-2'],
+        childPaths: ['child-2'],
+      },
+    ];
+
+    const grouped = groupResetPointsByName(points);
+
+    expect(grouped).toHaveLength(2);
+
+    const markerA = grouped.find((p) => p.name === 'marker-a');
+    const markerB = grouped.find((p) => p.name === 'marker-b');
+
+    expect(markerA).toBeDefined();
+    expect(markerA?.childWorkflowIds).toEqual(['child-1', 'child-2']);
+    expect(markerA?.displayName).toBe('marker-a ([child-1, child-2])');
+
+    expect(markerB).toBeDefined();
+    expect(markerB?.childWorkflowIds).toEqual(['child-1']);
+    expect(markerB?.displayName).toBe('child-1/marker-b');
+  });
+
+  it('should return empty array for empty input', () => {
+    const grouped = groupResetPointsByName([]);
+    expect(grouped).toHaveLength(0);
+  });
+
+  it('should preserve order: parent markers first, then child markers', () => {
+    const points: DiscoveredResetPoint[] = [
+      {
+        name: 'child-marker',
+        displayName: 'child-1/child-marker',
+        source: 'child',
+        childWorkflowIds: ['child-1'],
+        childPaths: ['child-1'],
+      },
+      { name: 'parent-marker', displayName: 'parent-marker', source: 'parent' },
+    ];
+
+    const grouped = groupResetPointsByName(points);
+
+    expect(grouped).toHaveLength(2);
+    expect(grouped[0].source).toBe('parent');
+    expect(grouped[1].source).toBe('child');
   });
 });

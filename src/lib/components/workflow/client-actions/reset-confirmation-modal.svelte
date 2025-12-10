@@ -324,7 +324,11 @@
               {#each availableResetPoints as resetPoint}
                 <Option value={resetPoint.name}>
                   {resetPoint.displayName}
-                  {#if resetPoint.source === 'child'}
+                  {#if resetPoint.source === 'child' && (resetPoint.childWorkflowIds?.length ?? 0) > 1}
+                    <span class="text-gray-500"
+                      >(children: {resetPoint.childWorkflowIds?.length})</span
+                    >
+                  {:else if resetPoint.source === 'child'}
                     <span class="text-gray-500">(child)</span>
                   {/if}
                 </Option>
