@@ -151,52 +151,71 @@ async function discoverResetPointsRecursive(
  * Groups discovered reset points by marker name.
  * Parent markers remain separate, child markers with the same name are grouped together.
  * Display format for grouped child markers: "marker_name ([workflow1, workflow2])"
+ * Deduplicates workflow IDs when the same marker appears multiple times in a child.
  */
 export function groupResetPointsByName(
   points: DiscoveredResetPoint[],
 ): DiscoveredResetPoint[] {
   const parentPoints: DiscoveredResetPoint[] = [];
-  const childPointsByName = new Map<string, DiscoveredResetPoint>();
+  const childPointsByName = new Map<
+    string,
+    { workflowIds: Set<string>; paths: Set<string> }
+  >();
 
   for (const point of points) {
     if (point.source === 'parent') {
       // Parent markers stay separate
       parentPoints.push(point);
     } else {
-      // Group child markers by name
+      // Group child markers by name, using Sets to deduplicate
       const existing = childPointsByName.get(point.name);
       if (existing) {
-        // Merge into existing group
-        existing.childWorkflowIds = [
-          ...(existing.childWorkflowIds || []),
-          ...(point.childWorkflowIds || []),
-        ];
-        existing.childPaths = [
-          ...(existing.childPaths || []),
-          ...(point.childPaths || []),
-        ];
+        // Merge into existing group (Sets automatically deduplicate)
+        for (const id of point.childWorkflowIds || []) {
+          existing.workflowIds.add(id);
+        }
+        for (const path of point.childPaths || []) {
+          existing.paths.add(path);
+        }
       } else {
-        // Create new group
-        childPointsByName.set(point.name, { ...point });
+        // Create new group with Sets for deduplication
+        childPointsByName.set(point.name, {
+          workflowIds: new Set(point.childWorkflowIds || []),
+          paths: new Set(point.childPaths || []),
+        });
       }
     }
   }
 
-  // Update displayName for grouped child markers
-  for (const point of childPointsByName.values()) {
-    const workflowIds = point.childWorkflowIds || [];
+  // Convert Sets back to arrays and build final DiscoveredResetPoint objects
+  const childPoints: DiscoveredResetPoint[] = [];
+  for (const [name, data] of childPointsByName.entries()) {
+    const workflowIds = Array.from(data.workflowIds);
+    const paths = Array.from(data.paths);
+
+    let displayName: string;
     if (workflowIds.length > 1) {
       // Format: "marker_name ([workflow1, workflow2])"
-      point.displayName = `${point.name} ([${workflowIds.join(', ')}])`;
+      displayName = `${name} ([${workflowIds.join(', ')}])`;
     } else if (workflowIds.length === 1) {
       // Single child: keep path-based format for clarity
-      const path = point.childPaths?.[0] || workflowIds[0];
-      point.displayName = `${path}/${point.name}`;
+      const path = paths[0] || workflowIds[0];
+      displayName = `${path}/${name}`;
+    } else {
+      displayName = name;
     }
+
+    childPoints.push({
+      name,
+      displayName,
+      source: 'child',
+      childWorkflowIds: workflowIds,
+      childPaths: paths,
+    });
   }
 
   // Return parent markers first, then grouped child markers
-  return [...parentPoints, ...Array.from(childPointsByName.values())];
+  return [...parentPoints, ...childPoints];
 }
 
 /**

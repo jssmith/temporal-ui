@@ -1306,4 +1306,74 @@ describe('groupResetPointsByName', () => {
     expect(grouped[0].source).toBe('parent');
     expect(grouped[1].source).toBe('child');
   });
+
+  it('should deduplicate when same marker appears multiple times in one child', () => {
+    // Scenario: child-1 has the marker "checkpoint" recorded twice in its history
+    const points: DiscoveredResetPoint[] = [
+      {
+        name: 'checkpoint',
+        displayName: 'child-1/checkpoint',
+        source: 'child',
+        childWorkflowIds: ['child-1'],
+        childPaths: ['child-1'],
+      },
+      {
+        name: 'checkpoint',
+        displayName: 'child-1/checkpoint',
+        source: 'child',
+        childWorkflowIds: ['child-1'],
+        childPaths: ['child-1'],
+      },
+    ];
+
+    const grouped = groupResetPointsByName(points);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].name).toBe('checkpoint');
+    // child-1 should appear only once, not twice
+    expect(grouped[0].childWorkflowIds).toEqual(['child-1']);
+    expect(grouped[0].displayName).toBe('child-1/checkpoint');
+  });
+
+  it('should deduplicate across multiple children with duplicates', () => {
+    // Scenario: child-1 and child-2 both have "marker" twice each
+    const points: DiscoveredResetPoint[] = [
+      {
+        name: 'marker',
+        displayName: 'child-1/marker',
+        source: 'child',
+        childWorkflowIds: ['child-1'],
+        childPaths: ['child-1'],
+      },
+      {
+        name: 'marker',
+        displayName: 'child-1/marker',
+        source: 'child',
+        childWorkflowIds: ['child-1'],
+        childPaths: ['child-1'],
+      },
+      {
+        name: 'marker',
+        displayName: 'child-2/marker',
+        source: 'child',
+        childWorkflowIds: ['child-2'],
+        childPaths: ['child-2'],
+      },
+      {
+        name: 'marker',
+        displayName: 'child-2/marker',
+        source: 'child',
+        childWorkflowIds: ['child-2'],
+        childPaths: ['child-2'],
+      },
+    ];
+
+    const grouped = groupResetPointsByName(points);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].name).toBe('marker');
+    // Each child should appear only once
+    expect(grouped[0].childWorkflowIds).toEqual(['child-1', 'child-2']);
+    expect(grouped[0].displayName).toBe('marker ([child-1, child-2])');
+  });
 });
